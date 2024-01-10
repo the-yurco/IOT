@@ -1,0 +1,275 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include "esp_wifi.h"
+#include "esp_system.h"
+#include "nvs_flash.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "protocol_examples_common.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
+
+#include "lwip/sockets.h"
+#include "lwip/dns.h"
+#include "lwip/netdb.h"
+
+#include "esp_log.h"
+#include "mqtt_client.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+
+// Define a tag for logging
+static const char *TAG = "MQTT_EXAMPLE";
+
+// Define LED related constants
+#define LEDC_MODE LEDC_LOW_SPEED_MODE
+#define LEDC_TIMER LEDC_TIMER_0
+#define LEDC_CHANNEL LEDC_CHANNEL_0
+
+// Define a variable to track the LED status
+bool stavLed = false;
+
+// Define an MQTT client handle
+esp_mqtt_client_handle_t client;
+
+// Define a variable to track button press
+bool buttonPressed = false;
+
+// Function to log an error if the error code is non-zero
+static void log_error_if_nonzero(const char *message, int error_code)
+{
+    if (error_code != 0)
+    {
+        ESP_LOGE(TAG, "Last error %s: 0x%x", message, error_code);
+    }
+}
+
+// Function to initialize the LEDC (LED Controller) module
+static void ledc_init(void)
+{
+    // LEDC timer configuration
+    ledc_timer_config_t ledc_timer = {
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .freq_hz = 5000, // Adjust frequency based on your needs
+        .speed_mode = LEDC_MODE,
+        .timer_num = LEDC_TIMER,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&ledc_timer);
+
+    // LEDC channel configuration
+    ledc_channel_config_t ledc_channel = {
+        .channel = LEDC_CHANNEL,
+        .duty = 0,
+        .gpio_num = GPIO_NUM_4, // Adjust GPIO based on your needs
+        .intr_type = LEDC_INTR_DISABLE,
+        .speed_mode = LEDC_MODE,
+        .timer_sel = LEDC_TIMER,
+    };
+    ledc_channel_config(&ledc_channel);
+}
+
+// Function to process LED status and update its state
+static void process_led(bool new_stav)
+{
+    if (stavLed != new_stav)
+    {
+        stavLed = new_stav;
+        gpio_set_level(GPIO_NUM_4, stavLed ? 1 : 0);
+        if (stavLed)
+        {
+            ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, 255); // full brightness initially
+            ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
+        }
+        else
+        {
+            ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, 0); // turn off LED
+            ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
+        }
+    }
+}
+
+// MQTT event handler function
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    // Handle different MQTT events
+    esp_mqtt_event_handle_t event = event_data;
+    client = event->client;
+    int msg_id;
+
+    switch ((esp_mqtt_event_id_t)event_id)
+    {
+    case MQTT_EVENT_CONNECTED:
+        // Subscribe to the switch and slider topics when connected
+        msg_id = esp_mqtt_client_subscribe(client, "/jurco/skuska/switch", 0);
+        ESP_LOGI(TAG, "Subscribed to /jurco/skuska/switch, msg_id=%d", msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(client, "/jurco/skuska/slider", 0);
+        ESP_LOGI(TAG, "Subscribed to /jurco/skuska/slider, msg_id=%d", msg_id);
+        break;
+
+    case MQTT_EVENT_DISCONNECTED:
+        // Handle disconnection
+        ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
+        break;
+
+    case MQTT_EVENT_SUBSCRIBED:
+        // Handle subscription confirmation
+        ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+        break;
+
+    case MQTT_EVENT_UNSUBSCRIBED:
+        // Handle unsubscription confirmation
+        ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
+        break;
+
+    case MQTT_EVENT_PUBLISHED:
+        // Handle message publishing confirmation
+        ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
+        break;
+
+    case MQTT_EVENT_DATA:
+        // Handle received MQTT data
+        ESP_LOGI(TAG, "MQTT_EVENT_DATA");
+        printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
+        printf("DATA=%.*s\r\n", event->data_len, event->data);
+
+        // Check if the message is related to the switch
+        if (strncmp("/jurco/skuska/switch", event->topic, event->topic_len) == 0)
+        {
+            if (strncmp("on", event->data, event->data_len) == 0)
+            {
+                // Turn on the LED
+                process_led(true);
+            }
+            else if (strncmp("off", event->data, event->data_len) == 0)
+            {
+                // Turn off the LED
+                process_led(false);
+            }
+        }
+
+        // Check if the message is related to the slider and the LED is ON
+        if (stavLed && strncmp("/jurco/skuska/slider", event->topic, event->topic_len) == 0)
+        {
+            // Process slider value
+            uint8_t brightness;
+            sscanf(event->data, "%hhu", &brightness);
+
+            // Ensure the brightness is within a valid range (0 to 255)
+            brightness = (brightness > 255) ? 255 : brightness;
+
+            // Use brightness to control LED brightness
+            // Map the brightness value to the LEDC duty cycle range (0 to 255)
+            uint32_t duty = (brightness * 255) / 255; // Adjust the denominator based on the desired maximum brightness
+
+            // Set the LEDC duty cycle
+            ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty);
+            ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
+        }
+        break;
+
+    case MQTT_EVENT_ERROR:
+        // Handle MQTT errors
+        ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
+        if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT)
+        {
+            log_error_if_nonzero("reported from esp-tls", event->error_handle->esp_tls_last_esp_err);
+            log_error_if_nonzero("reported from tls stack", event->error_handle->esp_tls_stack_err);
+            log_error_if_nonzero("captured as transport's socket errno", event->error_handle->esp_transport_sock_errno);
+            ESP_LOGI(TAG, "Last errno string (%s)", strerror(event->error_handle->esp_transport_sock_errno));
+        }
+        break;
+
+    default:
+        // Handle other MQTT events
+        ESP_LOGI(TAG, "Other event id:%d", event->event_id);
+        break;
+    }
+}
+
+// Function to start the MQTT client
+static void mqtt_app_start(void)
+{
+    // MQTT client configuration
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri = CONFIG_BROKER_URL,
+    };
+
+    // Initialize the MQTT client
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+
+    // Register the MQTT event handler
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+
+    // Start the MQTT client
+    esp_mqtt_client_start(client);
+}
+
+// Task to handle button presses
+void button(void *arg)
+{
+    while (1)
+    {
+        // Check if the button is pressed
+        if (!gpio_get_level(GPIO_NUM_34))
+        {
+            if (!buttonPressed)
+            {
+                if (stavLed)
+                {
+                    stavLed = 0;
+                    // Publish "off" to the switch topic
+                    esp_mqtt_client_publish(client, "/jurco/skuska/switch", "off", 0, 0, 1);
+                }
+                else
+                {
+                    stavLed = 1;
+                    // Publish "on" to the switch topic
+                    esp_mqtt_client_publish(client, "/jurco/skuska/switch", "on", 0, 0, 1);
+                }
+
+                buttonPressed = 1;
+            }
+        }
+        else
+        {
+            buttonPressed = 0;
+        }
+    }
+}
+
+// Main application function
+void app_main(void)
+{
+    // Configure GPIO for the LED
+    gpio_reset_pin(GPIO_NUM_4);
+    gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
+
+    // Configure GPIO for the switch
+    gpio_reset_pin(GPIO_NUM_13);
+    gpio_set_direction(GPIO_NUM_13, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(GPIO_NUM_13, GPIO_PULLUP_ONLY);
+
+    // Initialize LEDC
+    ledc_init();
+
+    // Initialize non-volatile storage (NVS), networking, and event loop
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Connect to the network
+    ESP_ERROR_CHECK(example_connect());
+
+    // Start the MQTT client
+    mqtt_app_start();
+
+    // Create a task to handle button presses
+    xTaskCreate(button, "button", 2048, NULL, 0, NULL);
+}
