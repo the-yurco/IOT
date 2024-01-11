@@ -28,13 +28,10 @@ static const char *TAG = "MQTT_EXAMPLE";
 #define LEDC_MODE LEDC_LOW_SPEED_MODE
 #define LEDC_TIMER LEDC_TIMER_0
 #define LEDC_CHANNEL LEDC_CHANNEL_0
-// ... (other includes and definitions)
 
 bool stavLed = false;
 esp_mqtt_client_handle_t client;
-bool buttonPressed = false;  // Move this line here
-
-// ... (rest of your code)
+bool buttonPressed = false;  
 
 
 
