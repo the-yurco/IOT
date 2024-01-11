@@ -16,10 +16,10 @@ void button_task(void *arg) {
             xTaskNotify(LEDTask, 0, eNoAction);
             vTaskDelay(pdMS_TO_TICKS(100)); // Debounce delay
             while (gpio_get_level(PUSH_BUTTON_PIN) == 0) {
-                vTaskDelay(pdMS_TO_TICKS(10)); // Wait for button release
+                vTaskDelay(pdMS_TO_TICKS(10)); 
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(10)); // Poll the button state every 10ms
+        vTaskDelay(pdMS_TO_TICKS(10)); 
     }
 }
 
@@ -35,12 +35,12 @@ void LED_task(void *arg) {
 }
 
 void app_main(void) {
-    // Configure the push button in pull-up mode
+    // Pull-up mode BUTTON
     gpio_set_direction(PUSH_BUTTON_PIN, GPIO_MODE_INPUT);
     gpio_set_pull_mode(PUSH_BUTTON_PIN, GPIO_PULLUP_ONLY);
 
     gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(LED_PIN, 0); // Initialize LED as OFF
+    gpio_set_level(LED_PIN, 0); // Initial state of button - OFF
 
     xTaskCreate(button_task, "Button_task", 4096, NULL, 2, &ButtonTask);
     xTaskCreate(LED_task, "LED_task", 4096, NULL, 1, &LEDTask);
