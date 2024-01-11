@@ -23,24 +23,21 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 
-// Define a tag for logging
 static const char *TAG = "MQTT_EXAMPLE";
 
-// Define LED related constants
 #define LEDC_MODE LEDC_LOW_SPEED_MODE
 #define LEDC_TIMER LEDC_TIMER_0
 #define LEDC_CHANNEL LEDC_CHANNEL_0
+// ... (other includes and definitions)
 
-// Define a variable to track the LED status
 bool stavLed = false;
-
-// Define an MQTT client handle
 esp_mqtt_client_handle_t client;
+bool buttonPressed = false;  // Move this line here
 
-// Define a variable to track button press
-bool buttonPressed = false;
+// ... (rest of your code)
 
-// Function to log an error if the error code is non-zero
+
+
 static void log_error_if_nonzero(const char *message, int error_code)
 {
     if (error_code != 0)
@@ -49,10 +46,8 @@ static void log_error_if_nonzero(const char *message, int error_code)
     }
 }
 
-// Function to initialize the LEDC (LED Controller) module
 static void ledc_init(void)
 {
-    // LEDC timer configuration
     ledc_timer_config_t ledc_timer = {
         .duty_resolution = LEDC_TIMER_8_BIT,
         .freq_hz = 5000, // Adjust frequency based on your needs
@@ -62,7 +57,6 @@ static void ledc_init(void)
     };
     ledc_timer_config(&ledc_timer);
 
-    // LEDC channel configuration
     ledc_channel_config_t ledc_channel = {
         .channel = LEDC_CHANNEL,
         .duty = 0,
@@ -74,7 +68,6 @@ static void ledc_init(void)
     ledc_channel_config(&ledc_channel);
 }
 
-// Function to process LED status and update its state
 static void process_led(bool new_stav)
 {
     if (stavLed != new_stav)
@@ -94,47 +87,53 @@ static void process_led(bool new_stav)
     }
 }
 
-// MQTT event handler function
+/*
+ * @brief Event handler registered to receive MQTT events
+ *
+ *  This function is called by the MQTT client event loop.
+ *
+ * @param handler_args user data registered to the event.
+ * @param base Event base for the handler(always MQTT Base in this example).
+ * @param event_id The id for the received event.
+ * @param event_data The data for the event, esp_mqtt_event_handle_t.
+ */
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
-    // Handle different MQTT events
+    ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%" PRIi32 "", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
     client = event->client;
     int msg_id;
-
     switch ((esp_mqtt_event_id_t)event_id)
     {
     case MQTT_EVENT_CONNECTED:
-        // Subscribe to the switch and slider topics when connected
+        ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+
+        // Subscribe to the switch and slider topics
         msg_id = esp_mqtt_client_subscribe(client, "/jurco/skuska/switch", 0);
         ESP_LOGI(TAG, "Subscribed to /jurco/skuska/switch, msg_id=%d", msg_id);
 
         msg_id = esp_mqtt_client_subscribe(client, "/jurco/skuska/slider", 0);
         ESP_LOGI(TAG, "Subscribed to /jurco/skuska/slider, msg_id=%d", msg_id);
+
         break;
 
     case MQTT_EVENT_DISCONNECTED:
-        // Handle disconnection
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
         break;
 
     case MQTT_EVENT_SUBSCRIBED:
-        // Handle subscription confirmation
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
         break;
 
     case MQTT_EVENT_UNSUBSCRIBED:
-        // Handle unsubscription confirmation
         ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
         break;
 
     case MQTT_EVENT_PUBLISHED:
-        // Handle message publishing confirmation
         ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
         break;
 
     case MQTT_EVENT_DATA:
-        // Handle received MQTT data
         ESP_LOGI(TAG, "MQTT_EVENT_DATA");
         printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
         printf("DATA=%.*s\r\n", event->data_len, event->data);
@@ -175,7 +174,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
 
     case MQTT_EVENT_ERROR:
-        // Handle MQTT errors
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
         if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT)
         {
@@ -187,36 +185,27 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
 
     default:
-        // Handle other MQTT events
         ESP_LOGI(TAG, "Other event id:%d", event->event_id);
         break;
     }
 }
 
-// Function to start the MQTT client
 static void mqtt_app_start(void)
 {
-    // MQTT client configuration
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = CONFIG_BROKER_URL,
     };
 
-    // Initialize the MQTT client
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
-
-    // Register the MQTT event handler
+    /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-
-    // Start the MQTT client
     esp_mqtt_client_start(client);
 }
 
-// Task to handle button presses
 void button(void *arg)
 {
     while (1)
     {
-        // Check if the button is pressed
         if (!gpio_get_level(GPIO_NUM_34))
         {
             if (!buttonPressed)
@@ -244,32 +233,36 @@ void button(void *arg)
     }
 }
 
-// Main application function
 void app_main(void)
 {
-    // Configure GPIO for the LED
     gpio_reset_pin(GPIO_NUM_4);
     gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT);
 
-    // Configure GPIO for the switch
+    // Configure switch pin
     gpio_reset_pin(GPIO_NUM_13);
     gpio_set_direction(GPIO_NUM_13, GPIO_MODE_INPUT);
     gpio_set_pull_mode(GPIO_NUM_13, GPIO_PULLUP_ONLY);
 
-    // Initialize LEDC
-    ledc_init();
+    ledc_init(); // Initialize LEDC
 
-    // Initialize non-volatile storage (NVS), networking, and event loop
+    ESP_LOGI(TAG, "[APP] Startup..");
+    ESP_LOGI(TAG, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
+    ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
+
+    esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("mqtt_client", ESP_LOG_VERBOSE);
+    esp_log_level_set("MQTT_EXAMPLE", ESP_LOG_VERBOSE);
+    esp_log_level_set("TRANSPORT_BASE", ESP_LOG_VERBOSE);
+    esp_log_level_set("esp-tls", ESP_LOG_VERBOSE);
+    esp_log_level_set("TRANSPORT", ESP_LOG_VERBOSE);
+    esp_log_level_set("outbox", ESP_LOG_VERBOSE);
+
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // Connect to the network
     ESP_ERROR_CHECK(example_connect());
 
-    // Start the MQTT client
     mqtt_app_start();
-
-    // Create a task to handle button presses
     xTaskCreate(button, "button", 2048, NULL, 0, NULL);
 }
